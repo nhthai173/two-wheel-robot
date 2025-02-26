@@ -29,6 +29,13 @@ class Enviroment(object):
         # trail set
         self.trailSet = []
 
+        # enviroment variables
+        self.walls = []
+
+    def add_wall(self, start, end):
+        pygame.draw.line(self.map, self.white, start, end, 3)
+        self.walls.append((start, end))            
+
     def write_info(self, vl, vr, theta):
         txt = f'vl = {vl:.2f} | vr = {vr:.2f} | theta = {int(math.degrees(theta))}'
         self.text = self.font.render(txt, True, self.white, self.black)
@@ -37,7 +44,7 @@ class Enviroment(object):
     def trail(self, pos):
         for i in range(0, len(self.trailSet) - 1):
             pygame.draw.line(self.map, self.yellow, (self.trailSet[i][0], self.trailSet[i][1]), (self.trailSet[i + 1][0], self.trailSet[i + 1][1]))
-        if self.trailSet.__sizeof__() > 10000:
+        if self.trailSet.__sizeof__() > 100000:
             self.trailSet.pop(0)
         self.trailSet.append(pos)
 
@@ -51,14 +58,15 @@ class Enviroment(object):
 
 
 class Robot:
-    def __init__(self, startPos, robotImg, width):
+    def __init__(self, startPos, robotImg, enviroment: Enviroment):
+        self.running = True
+        self.env = enviroment
         self.m2p = 3779.52
-        self.width = width * self.m2p
         self.x = startPos[0]
         self.y = startPos[1]
         self.theta = 0
-        self.vl = self.m2p * 0.01e-2
-        self.vr = self.m2p * -0.01e-2
+        self.vl = self.m2p * 0.03e-2
+        self.vr = self.m2p * -0.03e-2
         self.maxSpeed = self.m2p * 1e-2
         self.minSpeed = -self.m2p * 1e-2
         # robot variable
@@ -66,7 +74,7 @@ class Robot:
         self.r = 2.5e-2 * self.m2p
         # graphics
         self.img = pygame.image.load(robotImg)
-        self.img = pygame.transform.scale(self.img, (int(self.width*2), int(self.width*2)))
+        self.img = pygame.transform.scale(self.img, (75, 75))
         self.rotated = self.img
         self.rect = self.rotated.get_rect(center = (self.x, self.y))
         # time
@@ -76,7 +84,7 @@ class Robot:
     def draw(self, map):
         map.blit(self.rotated, self.rect)
 
-    def move(self, event = None):
+    def handle_event(self, event):
         # Change velocity
         if event:
             if event.type == pygame.KEYDOWN:
@@ -90,6 +98,8 @@ class Robot:
                     self.vr += 0.0001 * self.m2p
                 if event.key == pygame.K_4:
                     self.vr -= 0.0001 * self.m2p
+
+    def move(self):
         # update position
         self.vr = min(self.vr, self.maxSpeed)
         self.vl = min(self.vl, self.maxSpeed)
@@ -109,16 +119,70 @@ class Robot:
                     [0, self.r]])
         vv = np.linalg.inv(R) @ np.linalg.pinv(j1f) @ j2 @ np.array([[self.vl], [self.vr]])
         vx, vy, omega = vv.flatten()
-        self.x += vx * self.dataTime
-        self.y -= vy * self.dataTime
-        self.theta += omega * self.dataTime
-
+        new_x = self.x + vx * self.dataTime
+        new_y = self.y + vy * self.dataTime
+        new_theta = self.theta + omega * self.dataTime
         # limit theta
-        self.theta = (self.theta + np.pi) % (2 * np.pi) - np.pi
-        
+        new_theta = (new_theta + np.pi) % (2 * np.pi) - np.pi
+
+        # check collision then stop
+        for wall in self.env.walls:
+            robot_line = np.array([[int(self.x), int(self.y)], [int(new_x), int(new_y)]])
+            wall_line = np.array(wall)
+            if self.check_collision(robot_line, wall_line):
+                # self.running = False
+                self.vl = 0
+                self.vr = 0
+                break
+        self.x = new_x
+        self.y = new_y
+        self.theta = new_theta
+
         self.rotated = pygame.transform.rotozoom(self.img, math.degrees(self.theta), 1)
         self.rect = self.rotated.get_rect(center = (self.x, self.y))
 
+    def find_intersection(self, line1, line2):
+        xdiff = np.array([line1[0][0] - line1[1][0], line2[0][0] - line2[1][0]])
+        ydiff = np.array([line1[0][1] - line1[1][1], line2[0][1] - line2[1][1]])
+
+        def det(a, b):
+            return a[0] * b[1] - a[1] * b[0]
+
+        div = det(xdiff, ydiff)
+        if div == 0:
+            return None
+
+        d = np.array([det(*line1), det(*line2)])
+        x = det(d, xdiff) / div
+        y = det(d, ydiff) / div
+        return x, y
+    
+    def check_collision(self, line1, line2):
+        ipoint = self.find_intersection(line1, line2)
+        if ipoint is None:
+            return False
+        x, y = ipoint
+        if x is None:
+            return False
+        if min(line1[0][0], line1[1][0]) <= x <= max(line1[0][0], line1[1][0]) and min(line1[0][1], line1[1][1]) <= y <= max(line1[0][1], line1[1][1]):
+            return True
+        return False
+
+    def loop(self):
+        while(self.running):
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    self.running = False
+                self.handle_event(event)
+            pygame.display.update()
+            self.env.map.fill(self.env.black)
+            self.move()
+            self.draw(self.env.map)
+            self.env.frame((self.x, self.y), self.theta)
+            self.env.trail((self.x, self.y))
+            self.env.write_info(self.vl, self.vr, self.theta)
 
 
 if __name__ == "__main__":
@@ -133,21 +197,13 @@ if __name__ == "__main__":
     env = Enviroment(dims)
 
     # Robot
-    robot = Robot(start, './2w-robot.png', 0.01)
+    robot = Robot(start, './2w-robot.png', env)
+
+    # wall around screen
+    env.add_wall((0, 0), (dims[1], 0))
+    env.add_wall((0, 0), (0, dims[0]))
+    env.add_wall((0, dims[0]), (dims[1], dims[0]))
+    env.add_wall((dims[1], 0), (dims[1], dims[0]))
 
     # loop
-    while(running):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                running = False
-            robot.move(event)
-
-        pygame.display.update()
-        env.map.fill(env.black)
-        robot.move()
-        robot.draw(env.map)
-        env.frame((robot.x, robot.y), robot.theta)
-        env.trail((robot.x, robot.y))
-        env.write_info(robot.vl, robot.vr, robot.theta)
+    robot.loop()
